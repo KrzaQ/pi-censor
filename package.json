@@ -1,0 +1,20 @@
+{
+  "name": "pi-censor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A pi extension that decides about every tool call: fixed rules, then a local classifier, then the user.",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "test": "bun test",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
