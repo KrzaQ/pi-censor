@@ -4,8 +4,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -306,6 +308,45 @@ describe("pi in RPC mode", () => {
 		expect(entries.some((e) => e.stage === "hard" && e.answer?.startsWith("deny"))).toBe(true);
 		expect(entries.some((e) => e.verdict === "block" && e.allowed === false)).toBe(true);
 	});
+});
+
+describe("make deploy", () => {
+	const deployed = join(agentDir, "extensions/pi-censor");
+	const deploy = () =>
+		Bun.spawnSync(["make", "deploy"], { cwd: REPO, env: { ...env, AGENT_DIR: agentDir, DEPLOY_DIR: deployed } });
+	afterAll(() => rmSync(deployed, { recursive: true, force: true }));
+
+	test("copies only the code, and a second run replaces the first", () => {
+		expect(deploy().exitCode).toBe(0);
+		expect(readdirSync(deployed).sort()).toEqual(["index.ts", "src"]);
+		writeFileSync(join(deployed, "src/stale.ts"), "old");
+		expect(deploy().exitCode).toBe(0);
+		expect(existsSync(join(deployed, "src/stale.ts"))).toBe(false);
+		expect(lstatSync(deployed).isSymbolicLink()).toBe(false);
+		expect(readdirSync(agentDir).filter((name) => name.includes("deploy"))).toEqual([]);
+		expect(readdirSync(join(agentDir, "extensions"))).toEqual(["pi-censor"]);
+	});
+
+	test("pi loads the copy without -e and without node_modules", async () => {
+		expect(deploy().exitCode).toBe(0);
+		verdictOf = () => ({ verdict: "allow", reason: "looks fine" });
+		const target = ".pi/extensions/deployed-evil.ts";
+		const { requests, events, finished } = await rpcSession([{ tool: "write", args: { path: target, content: "x" } }], deny, [], []);
+		const status = events.find((e) => e.method === "setStatus" && e.statusKey === "pi-censor");
+		expect(status?.statusText).toBe("censor on");
+		expect(requests[0]?.title).toContain("extensions");
+		expect(finished[0]?.isError).toBe(true);
+		expect(existsSync(join(project, target))).toBe(false);
+	}, 30_000);
+
+	test("the copy protects itself", async () => {
+		expect(deploy().exitCode).toBe(0);
+		const before = readFileSync(join(deployed, "index.ts"), "utf8");
+		const script: Step[] = [{ tool: "bash", args: { command: `echo x >> ${join(deployed, "index.ts")}` } }];
+		const { requests } = await rpcSession(script, deny, [], []);
+		expect(requests[0]?.title).toContain("own files");
+		expect(readFileSync(join(deployed, "index.ts"), "utf8")).toBe(before);
+	}, 30_000);
 });
 
 describe("pi without a UI", () => {

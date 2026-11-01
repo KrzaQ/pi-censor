@@ -146,6 +146,11 @@ describe("commands and shapes", () => {
 			"rsync -a a host:b",
 			"eval $x",
 			"mkfs.ext4 /dev/sda1",
+			"make deploy",
+			"make -C ~/code/pi-censor deploy",
+			"make test deploy",
+			"cd x && gmake deploy",
+			"AGENT_DIR=/x make deploy",
 		]) {
 			expect(hard(command)).toBeString();
 		}
@@ -164,6 +169,9 @@ describe("commands and shapes", () => {
 			"a || sh",
 			"grep -r x src",
 			"bun test",
+			"make test",
+			"make deploy-docs",
+			"cat deploy",
 		]) {
 			expect(hard(command)).toBeUndefined();
 		}

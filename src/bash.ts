@@ -59,6 +59,9 @@ const ALWAYS_ASK: ReadonlyArray<readonly [RegExp, string]> = [
 	[word("rsync"), "it reaches another host"],
 	[word("eval"), "it evaluates text as code"],
 	[word(String.raw`mkfs[.\w]*`), "it formats a disk"],
+	// The deployed copy protects itself, not this repo. `make deploy` here is
+	// how a session would replace the live extension with code it just edited.
+	[new RegExp(`${WORD_START}g?make\\s${REST_OF_COMMAND}(?<=\\s)deploy(?:\\s|$)`), "it may deploy"],
 	[new RegExp(`${WORD_START}rm\\s${REST_OF_COMMAND}(?<=\\s)-(?:[a-zA-Z]*[rR]|-recursive)`), "it removes a tree"],
 	[new RegExp(`${WORD_START}rm\\s${REST_OF_COMMAND}(?<=\\s)-(?:[a-zA-Z]*f|-force)`), "it removes files by force"],
 	[new RegExp(`${WORD_START}base64\\s${REST_OF_COMMAND}(?<=\\s)-(?:[a-zA-Z]*[dD]|-decode)`), "it decodes hidden text"],
