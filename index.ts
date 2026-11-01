@@ -46,10 +46,6 @@ export default function (pi: ExtensionAPI) {
 		protection,
 		maxBlocks: config.maxBlocks,
 		log,
-		classify: (request, session, signal) => {
-			if (configError) throw new Error(configError);
-			return classify(config, request, session, signal);
-		},
 	});
 
 	pi.on("session_start", (_event, ctx) => {
@@ -78,8 +74,11 @@ export default function (pi: ExtensionAPI) {
 				session: ctx.sessionManager.getSessionId(),
 				builtin: tool?.sourceInfo.source === "builtin",
 				hints: tool?.annotations,
-				model: ctx.model,
 				signal: ctx.signal,
+				classify: (request, signal) => {
+					if (configError) throw new Error(configError);
+					return classify(config, ctx.modelRegistry, ctx.model, request, signal);
+				},
 				ask: ctx.hasUI
 					? ({ call, parentTool, reason, cwd }) =>
 							ask(ctx.ui, { tool: call.tool, input: call.input, parentTool, reason, cwd, home }, ctx.signal)

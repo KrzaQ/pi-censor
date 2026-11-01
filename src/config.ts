@@ -4,9 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface Config {
-	/** The Ollama server. */
-	url: string;
-	/** The classifier model. Unset means the session's own model. */
+	/** The classifier model as `provider/id`. Unset means the session's own model. */
 	model?: string;
 	timeoutMs: number;
 	/** How many classifier blocks in a row run before the next one asks the user. */
@@ -14,7 +12,6 @@ export interface Config {
 }
 
 export const DEFAULTS: Config = {
-	url: "http://localhost:11434",
 	timeoutMs: 30_000,
 	maxBlocks: 3,
 };
@@ -34,8 +31,8 @@ export interface LoadedConfig {
 }
 
 function invalid(value: Record<string, unknown>): string | undefined {
-	for (const key of ["url", "model"] as const) {
-		if (key in value && typeof value[key] !== "string") return `${key} must be a string`;
+	if ("model" in value && !(typeof value.model === "string" && value.model.includes("/"))) {
+		return "model must be provider/id";
 	}
 	for (const key of ["timeoutMs", "maxBlocks"] as const) {
 		const number = value[key];

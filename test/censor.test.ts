@@ -18,17 +18,17 @@ function setup(verdicts: Array<Verdict | Error> = [], answers: Answer[] = []) {
 		protection: box.protection,
 		maxBlocks: 2,
 		log: (entry) => logged.push(entry),
+	});
+	const context: CallContext = {
+		cwd: box.cwd,
+		session: "s1",
+		builtin: true,
 		classify: async (request) => {
 			requests.push(request);
 			const next = verdicts.shift() ?? new Error("no verdict left");
 			if (next instanceof Error) throw next;
 			return next;
 		},
-	});
-	const context: CallContext = {
-		cwd: box.cwd,
-		session: "s1",
-		builtin: true,
 		ask: async (question) => {
 			asked.push(question);
 			return answers.shift() ?? { answer: "deny" };
@@ -230,24 +230,6 @@ describe("what the classifier sees", () => {
 		expect(requests[0]).toMatchObject({ plain: true, roots: [box.cwd], hints: { readOnlyHint: true } });
 		expect(requests[1]?.plain).toBe(false);
 		expect(requests[2]?.plain).toBeUndefined();
-	});
-
-	test("it gets the session's model of this call", async () => {
-		const seen: unknown[] = [];
-		const censor = new Censor({
-			protection: box.protection,
-			maxBlocks: 2,
-			log: () => undefined,
-			classify: async (_request, session) => {
-				seen.push(session);
-				return verdict("allow");
-			},
-		});
-		const model = { id: "tag", baseUrl: "http://localhost:11434/v1" };
-		const { context } = setup();
-		await censor.decide(bash("ls"), { ...context, model });
-		await censor.decide(bash("ls"), { ...context, model: { ...model, id: "other" } });
-		expect(seen).toEqual([model, { ...model, id: "other" }]);
 	});
 
 	test("a nested call names its parent", async () => {

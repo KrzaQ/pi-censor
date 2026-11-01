@@ -1,7 +1,7 @@
 // The order of decisions: hard rules, fast allow, classifier, then the user.
 
 import { isPlainCommand } from "./bash.ts";
-import type { ClassifierRequest, SessionModel, Verdict } from "./classifier.ts";
+import type { ClassifierRequest, Verdict } from "./classifier.ts";
 import type { Log, LogEntry } from "./log.ts";
 import { sessionRoots } from "./paths.ts";
 import type { Answer } from "./question.ts";
@@ -28,9 +28,9 @@ export interface CallContext {
 	/** The tool with this name is pi's own, not an extension's. */
 	builtin: boolean;
 	hints?: unknown;
-	/** The session's model at the time of this call. */
-	model?: SessionModel;
 	signal?: AbortSignal;
+	/** Ask the classifier. It uses the session's model at the time of this call. */
+	classify: (request: ClassifierRequest, signal?: AbortSignal) => Promise<Verdict>;
 	/** Undefined when nobody can answer. */
 	ask?: (question: AskRequest) => Promise<Answer>;
 }
@@ -45,7 +45,6 @@ export interface AskRequest {
 export interface Deps {
 	protection: Protection;
 	maxBlocks: number;
-	classify: (request: ClassifierRequest, session?: SessionModel, signal?: AbortSignal) => Promise<Verdict>;
 	log: Log;
 }
 
@@ -96,7 +95,7 @@ export class Censor {
 		const started = performance.now();
 		let verdict: Verdict;
 		try {
-			verdict = await this.deps.classify(this.request(call, context, roots), context.model, context.signal);
+			verdict = await context.classify(this.request(call, context, roots), context.signal);
 		} catch (error) {
 			const reason = `the classifier failed: ${error instanceof Error ? error.message : String(error)}`;
 			return this.toUser(call, context, { stage: "failure", reason });

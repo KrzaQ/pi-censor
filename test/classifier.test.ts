@@ -1,134 +1,165 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	chatUrl,
 	chooseModel,
 	classify,
 	MAX_CALL_CHARS,
+	type Model,
 	parseVerdict,
+	type Registry,
 	requestText,
 	SYSTEM_PROMPT,
 } from "../src/classifier.ts";
 import { DEFAULTS, loadConfig, logDir } from "../src/config.ts";
 import { fileLog } from "../src/log.ts";
 
-type Reply = () => Response | Promise<Response>;
-let reply: Reply = () => Response.json({});
-let lastBody: any;
-const server = Bun.serve({
-	port: 0,
-	async fetch(request) {
-		lastBody = await request.json();
-		return reply();
-	},
-});
-afterAll(() => server.stop(true));
+const session = { provider: "local", id: "session-tag", maxTokens: 65_536, reasoning: false } as Model;
+const other = { provider: "cloud", id: "luna", maxTokens: 1_000, reasoning: true } as Model;
 
-const config = { ...DEFAULTS, url: `http://localhost:${server.port}`, model: "small", timeoutMs: 200 };
+interface Call {
+	model: Model;
+	context: { systemPrompt?: string; messages: Array<{ content: Array<{ text: string }> }> };
+	options: Record<string, any>;
+}
+
+type Reply = (options: Record<string, any>) => unknown;
+
+function registry(reply: Reply) {
+	const calls: Call[] = [];
+	const fake = {
+		find: (provider: string, id: string) => (provider === "cloud" && id === "luna" ? other : undefined),
+		complete: async (model: Model, context: Call["context"], options: Record<string, any>) => {
+			calls.push({ model, context, options });
+			return reply(options);
+		},
+	} as unknown as Registry;
+	return { fake, calls };
+}
+
+const text = (content: string) => () => ({ stopReason: "stop", content: [{ type: "text", text: content }] });
 const request = { userMessages: ["hi"], tool: "bash", input: { command: "ls" }, plain: true, cwd: "/p", roots: ["/p"] };
-const answer = (content: unknown) => Response.json({ message: { content } });
 
 describe("classify", () => {
 	test("reads a verdict", async () => {
-		reply = () => answer('{"verdict":"block","reason":"  no\\nway "}');
-		expect(await classify(config, request)).toEqual({ verdict: "block", reason: "no way" });
+		const { fake } = registry(text('{"verdict":"block","reason":"  no\\nway "}'));
+		expect(await classify(DEFAULTS, fake, session, request)).toEqual({ verdict: "block", reason: "no way" });
 	});
 
-	test("asks for JSON with the system prompt first and no thinking", async () => {
-		reply = () => answer('{"verdict":"allow","reason":"ok"}');
-		await classify(config, request);
-		expect(lastBody).toMatchObject({ model: "small", stream: false, think: false });
-		expect(lastBody.format.properties.verdict.enum).toEqual(["allow", "block", "ask"]);
-		expect(lastBody.messages[0]).toEqual({ role: "system", content: SYSTEM_PROMPT });
-		expect(JSON.parse(lastBody.messages[1].content)).toMatchObject({
+	test("sends a fresh context with the call and no tools", async () => {
+		const { fake, calls } = registry(text('{"verdict":"allow","reason":"ok"}'));
+		await classify(DEFAULTS, fake, session, request);
+		const { context, options, model } = calls[0] as Call;
+		expect(model).toBe(session);
+		expect(context.systemPrompt).toBe(SYSTEM_PROMPT);
+		expect(context.messages).toHaveLength(1);
+		expect(Object.keys(context)).toEqual(["systemPrompt", "messages"]);
+		expect(JSON.parse(context.messages[0]?.content[0]?.text ?? "{}")).toMatchObject({
 			user_messages: ["hi"],
 			action: { tool: "bash", input: { command: "ls" } },
 			plain: true,
 		});
+		expect(options).toMatchObject({ cacheRetention: "none", maxTokens: 2048 });
+	});
+
+	test("gives a reasoning model no temperature, and respects its token limit", async () => {
+		const { fake, calls } = registry(text('{"verdict":"allow","reason":"ok"}'));
+		await classify(DEFAULTS, fake, session, request);
+		await classify({ ...DEFAULTS, model: "cloud/luna" }, fake, session, request);
+		expect(calls[0]?.options.temperature).toBe(0);
+		expect("temperature" in (calls[1]?.options ?? {})).toBe(false);
+		expect(calls[1]?.options.maxTokens).toBe(1000);
+	});
+
+	test("thinking in the answer does not count as text", async () => {
+		const { fake } = registry(() => ({
+			stopReason: "stop",
+			content: [
+				{ type: "thinking", thinking: '{"verdict":"allow","reason":"from the thinking"}' },
+				{ type: "text", text: '{"verdict":"ask","reason":"from the text"}' },
+			],
+		}));
+		expect((await classify(DEFAULTS, fake, session, request)).verdict).toBe("ask");
 	});
 
 	test("every kind of failure throws", async () => {
-		reply = () => new Response("nope", { status: 500 });
-		await expect(classify(config, request)).rejects.toThrow("500");
-		reply = () => answer("not json");
-		await expect(classify(config, request)).rejects.toThrow();
-		reply = () => answer('{"verdict":"maybe"}');
-		await expect(classify(config, request)).rejects.toThrow("no verdict");
-		reply = () => answer(null);
-		await expect(classify(config, request)).rejects.toThrow("no message");
-		reply = () => new Response("not json");
-		await expect(classify(config, request)).rejects.toThrow();
+		const failing = async (reply: Reply) => classify(DEFAULTS, registry(reply).fake, session, request);
+		await expect(failing(() => ({ stopReason: "error", errorMessage: "401", content: [] }))).rejects.toThrow("401");
+		await expect(failing(() => ({ stopReason: "aborted", content: [] }))).rejects.toThrow("aborted");
+		await expect(failing(() => ({ stopReason: "stop", content: [] }))).rejects.toThrow("no JSON");
+		await expect(failing(text("not json"))).rejects.toThrow("no JSON");
+		await expect(failing(text('{"verdict":"maybe"}'))).rejects.toThrow("no verdict");
+		await expect(failing(text('{"verdict":"allow"} and {"verdict":"block"}'))).rejects.toThrow();
+		await expect(
+			failing(() => {
+				throw new Error("no key for this provider");
+			}),
+		).rejects.toThrow("no key");
 	});
 
-	test("a slow server times out", async () => {
-		reply = async () => {
-			await Bun.sleep(1000);
-			return answer('{"verdict":"allow","reason":"late"}');
-		};
-		await expect(classify(config, request)).rejects.toThrow();
-	});
-
-	test("an unreachable server throws", async () => {
-		await expect(classify({ ...config, url: "http://localhost:1" }, request)).rejects.toThrow();
+	test("a slow model times out", async () => {
+		const { fake } = registry(
+			(options) =>
+				new Promise((_resolve, reject) => {
+					options.signal.addEventListener("abort", () => reject(options.signal.reason));
+				}),
+		);
+		await expect(classify({ ...DEFAULTS, timeoutMs: 20 }, fake, session, request)).rejects.toThrow();
 	});
 
 	test("the turn's signal cancels it", async () => {
-		reply = async () => {
-			await Bun.sleep(1000);
-			return answer('{"verdict":"allow","reason":"late"}');
-		};
-		const slow = { ...config, timeoutMs: 5000 };
+		const { fake } = registry(
+			(options) =>
+				new Promise((_resolve, reject) => {
+					options.signal.addEventListener("abort", () => reject(new Error("cancelled")));
+				}),
+		);
 		const controller = new AbortController();
-		const result = classify(slow, request, undefined, controller.signal);
+		const result = classify(DEFAULTS, fake, session, request, controller.signal);
 		controller.abort();
-		await expect(result).rejects.toThrow();
+		await expect(result).rejects.toThrow("cancelled");
 	});
 
 	test("a call that is too long is not cut", async () => {
+		const { fake, calls } = registry(text("{}"));
 		const long = { ...request, input: { content: "x".repeat(MAX_CALL_CHARS + 1) } };
-		await expect(classify(config, long)).rejects.toThrow("over");
+		await expect(classify(DEFAULTS, fake, session, long)).rejects.toThrow("over");
+		expect(calls).toHaveLength(0);
 	});
 });
 
 describe("chooseModel", () => {
-	const local = { id: "session-tag", baseUrl: "http://localhost:11434/v1" };
-	const cloud = { id: "claude-opus-5-5", baseUrl: "https://api.anthropic.com" };
+	const { fake } = registry(text("{}"));
 
-	test("the session's model classifies by default", () => {
-		expect(chooseModel(DEFAULTS, local)).toBe("session-tag");
-		expect(chooseModel(DEFAULTS, { ...local, baseUrl: "http://127.0.0.1:11434/v1" })).toBe("session-tag");
-		const lan = { ...DEFAULTS, url: "http://10.0.0.5:11434" };
-		expect(chooseModel(lan, { ...local, baseUrl: "http://10.0.0.5:11434/v1" })).toBe("session-tag");
+	test("the session's model classifies by default, wherever it runs", () => {
+		expect(chooseModel(DEFAULTS, fake, session)).toBe(session);
+		expect(chooseModel(DEFAULTS, fake, other)).toBe(other);
 	});
 
 	test("the config overrides it", () => {
-		expect(chooseModel({ ...DEFAULTS, model: "small" }, local)).toBe("small");
-		expect(chooseModel({ ...DEFAULTS, model: "small" }, cloud)).toBe("small");
-		expect(chooseModel({ ...DEFAULTS, model: "small" }, undefined)).toBe("small");
+		expect(chooseModel({ ...DEFAULTS, model: "cloud/luna" }, fake, session)).toBe(other);
+		expect(chooseModel({ ...DEFAULTS, model: "cloud/luna" }, fake, undefined)).toBe(other);
 	});
 
-	test("a model on another server never classifies", () => {
-		expect(() => chooseModel(DEFAULTS, cloud)).toThrow('Set "model"');
-		expect(() => chooseModel(DEFAULTS, { ...local, baseUrl: "http://localhost:8080/v1" })).toThrow('Set "model"');
-		expect(() => chooseModel(DEFAULTS, { ...local, baseUrl: "http://10.0.0.5:11434/v1" })).toThrow('Set "model"');
-		expect(() => chooseModel(DEFAULTS, { ...local, baseUrl: "not a url" })).toThrow('Set "model"');
-		expect(() => chooseModel(DEFAULTS, undefined)).toThrow("no model");
+	test("a model that pi does not know throws", () => {
+		expect(() => chooseModel({ ...DEFAULTS, model: "cloud/none" }, fake, session)).toThrow("does not know");
+		expect(() => chooseModel(DEFAULTS, fake, undefined)).toThrow("no model");
 	});
 
-	test("classify sends the chosen model, and a cloud session sends nothing", async () => {
-		reply = () => answer('{"verdict":"allow","reason":"ok"}');
-		const unset = { ...config, model: undefined };
-		await classify(unset, request, { id: "session-tag", baseUrl: `${config.url}/v1` });
-		expect(lastBody.model).toBe("session-tag");
-		lastBody = undefined;
-		await expect(classify(unset, request, cloud)).rejects.toThrow('Set "model"');
-		expect(lastBody).toBeUndefined();
+	test("an id may hold a slash", () => {
+		const find = (provider: string, id: string) => (provider === "router" && id === "vendor/m" ? other : undefined);
+		const router = { ...fake, find } as Registry;
+		expect(chooseModel({ ...DEFAULTS, model: "router/vendor/m" }, router, session)).toBe(other);
 	});
 });
 
 describe("parseVerdict", () => {
+	test("finds the object in code fences and around text", () => {
+		expect(parseVerdict('```json\n{"verdict":"allow","reason":"ok"}\n```').verdict).toBe("allow");
+		expect(parseVerdict('Here it is: {"verdict":"ask","reason":"x"}').verdict).toBe("ask");
+	});
+
 	test("keeps the reason to one short line", () => {
 		const { reason } = parseVerdict(JSON.stringify({ verdict: "ask", reason: `a\n${"b".repeat(500)}` }));
 		expect(reason).not.toContain("\n");
@@ -152,30 +183,22 @@ describe("request text", () => {
 	});
 });
 
-describe("chatUrl", () => {
-	test("accepts an OpenAI-style base URL", () => {
-		expect(chatUrl("http://h:1")).toBe("http://h:1/api/chat");
-		expect(chatUrl("http://h:1/")).toBe("http://h:1/api/chat");
-		expect(chatUrl("http://h:1/v1")).toBe("http://h:1/api/chat");
-		expect(chatUrl("http://h:1/v1/")).toBe("http://h:1/api/chat");
-	});
-});
-
 describe("config", () => {
 	const dir = mkdtempSync(join(tmpdir(), "pi-censor-config-"));
 	const file = join(dir, "config.json");
 
 	test("a missing file gives the defaults", () => {
 		expect(loadConfig(file)).toEqual({ config: DEFAULTS });
+		expect(DEFAULTS.model).toBeUndefined();
 	});
 
 	test("a file overrides the defaults", () => {
-		writeFileSync(file, '{"model":"small","maxBlocks":5}');
-		expect(loadConfig(file).config).toMatchObject({ model: "small", maxBlocks: 5, url: DEFAULTS.url });
+		writeFileSync(file, '{"model":"cloud/luna","maxBlocks":5}');
+		expect(loadConfig(file).config).toMatchObject({ model: "cloud/luna", maxBlocks: 5 });
 	});
 
 	test("a bad file is an error, not a silent default", () => {
-		for (const text of ["not json", "[]", '{"model":3}', '{"timeoutMs":"x"}', '{"maxBlocks":-1}']) {
+		for (const text of ["not json", "[]", '{"model":3}', '{"model":"no-slash"}', '{"timeoutMs":"x"}', '{"maxBlocks":-1}']) {
 			writeFileSync(file, text);
 			expect(loadConfig(file).error).toBeString();
 		}

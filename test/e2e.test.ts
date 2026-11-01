@@ -2,7 +2,16 @@
 // session's model and the classifier, so this test needs no GPU.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Subprocess } from "bun";
@@ -37,20 +46,32 @@ function completion(step: Step): string {
 	return `${chunk({ role: "assistant", tool_calls: [call] }, null)}${chunk({}, "tool_calls")}data: [DONE]\n\n`;
 }
 
+interface ChatRequest {
+	model: string;
+	messages: Array<{ content: string | Array<{ text?: string }> }>;
+}
+
+function textOf(content: ChatRequest["messages"][number]["content"] | undefined): string {
+	return typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
+}
+
+function sse(text: string): Response {
+	return new Response(text, { headers: { "content-type": "text/event-stream" } });
+}
+
 const server = Bun.serve({
 	port: 0,
 	async fetch(request) {
-		const url = new URL(request.url);
-		const body = (await request.json()) as { model: string; messages: Array<{ content: string }> };
-		if (url.pathname === "/api/chat") {
-			const content = body.messages[1]?.content ?? "{}";
+		const body = (await request.json()) as ChatRequest;
+		// Both go through pi, so only the system prompt tells them apart.
+		if (textOf(body.messages[0]?.content).startsWith("You review one action")) {
+			const content = textOf(body.messages[1]?.content);
 			classifierBodies.push(content);
 			classifierModels.push(body.model);
 			const verdict = verdictOf(JSON.parse(content).action);
-			return Response.json({ message: { content: JSON.stringify(verdict) } });
+			return sse(completion({ text: JSON.stringify(verdict) }));
 		}
-		const step = steps.shift() ?? { text: "done" };
-		return new Response(completion(step), { headers: { "content-type": "text/event-stream" } });
+		return sse(completion(steps.shift() ?? { text: "done" }));
 	},
 });
 afterAll(() => server.stop(true));
@@ -81,12 +102,14 @@ beforeAll(() => {
 					baseUrl: `http://localhost:${server.port}/v1`,
 					api: "openai-completions",
 					apiKey: "local",
-					models: [{ id: "fake", input: ["text"], contextWindow: 100_000, maxTokens: 1000 }],
+					models: [
+						{ id: "fake", input: ["text"], contextWindow: 100_000, maxTokens: 1000 },
+						{ id: "override", input: ["text"], contextWindow: 100_000, maxTokens: 1000 },
+					],
 				},
 			},
 		}),
 	);
-	writeFileSync(join(root, "config/pi-censor/config.json"), JSON.stringify({ url: `http://localhost:${server.port}` }));
 });
 
 interface Finished {
@@ -100,10 +123,11 @@ async function rpcSession(
 	script: Step[],
 	answer: (request: Record<string, any>) => Record<string, unknown>,
 	extraArgs: string[] = [],
+	load: string[] = ["-e", REPO],
 ): Promise<{ finished: Finished[]; requests: Array<Record<string, any>>; events: Array<Record<string, any>> }> {
 	steps = [...script, { text: "done" }];
 	const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(
-		[PI, "--mode", "rpc", "--no-session", "--model", "fake/fake", "-e", REPO, ...extraArgs],
+		[PI, "--mode", "rpc", "--no-session", "--model", "fake/fake", ...load, ...extraArgs],
 		{ cwd: project, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" },
 	);
 	const send = (value: unknown) => {
@@ -255,26 +279,24 @@ describe("pi in RPC mode", () => {
 
 	test("the classifier uses the session's model, and the config overrides it", async () => {
 		const file = join(root, "config/pi-censor/config.json");
-		const url = `http://localhost:${server.port}`;
 		verdictOf = () => ({ verdict: "allow", reason: "fine" });
 		await rpcSession([{ tool: "bash", args: { command: "pwd" } }], deny);
 		expect(classifierModels.at(-1)).toBe("fake");
 
-		writeFileSync(file, JSON.stringify({ url, model: "override-tag" }));
+		writeFileSync(file, JSON.stringify({ model: "fake/override" }));
 		await rpcSession([{ tool: "bash", args: { command: "pwd" } }], deny);
-		expect(classifierModels.at(-1)).toBe("override-tag");
-		writeFileSync(file, JSON.stringify({ url }));
+		rmSync(file);
+		expect(classifierModels.at(-1)).toBe("override");
 	}, 30_000);
 
-	test("a session's model on another server goes to the user, not to a model", async () => {
+	test("an override that pi does not know goes to the user", async () => {
 		const file = join(root, "config/pi-censor/config.json");
-		const url = `http://localhost:${server.port}`;
-		writeFileSync(file, JSON.stringify({ url: "http://localhost:1" }));
+		writeFileSync(file, JSON.stringify({ model: "fake/no-such-model" }));
 		const before = classifierBodies.length;
 		const { requests } = await rpcSession([{ tool: "bash", args: { command: "pwd" } }], deny);
-		writeFileSync(file, JSON.stringify({ url }));
+		rmSync(file);
 		expect(classifierBodies.length).toBe(before);
-		expect(requests[0]?.title).toContain('Set "model"');
+		expect(requests[0]?.title).toContain("does not know");
 	}, 30_000);
 
 	test("every decision is in a log that only the user can read", () => {
