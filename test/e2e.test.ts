@@ -258,7 +258,7 @@ describe("pi in RPC mode", () => {
 		expect(bodies[1]).toContain("pwd");
 		expect(bodies[1]).not.toContain("SECRET_OUTPUT_TEXT");
 		// An RPC client is not the user who types, so its message does not count.
-		expect(JSON.parse(bodies[1] ?? "{}").user_messages).toEqual([]);
+		expect(JSON.parse(bodies[1] ?? "{}").user_messages).toEqual({ first: [], left_out: 0, last: [] });
 	}, 30_000);
 
 	test("an extension that loads later cannot change an approved call", async () => {

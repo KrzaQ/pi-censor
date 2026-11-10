@@ -3,6 +3,16 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** Which of the user's typed messages the classifier sees. */
+export interface UserMessageLimits {
+	/** The first messages of the session. They usually set the task. */
+	first: number;
+	/** The last messages. They show where the work is now. */
+	last: number;
+	/** The size of one message. A longer one loses its middle. */
+	chars: number;
+}
+
 export interface Config {
 	/** The classifier model as `provider/id`. Unset means the session's own model. */
 	model?: string;
@@ -11,13 +21,31 @@ export interface Config {
 	maxBlocks: number;
 	/** A tool that declares itself read-only runs without a classifier call. */
 	trustReadOnlyHint: boolean;
+	userMessages: UserMessageLimits;
 }
 
 export const DEFAULTS: Config = {
 	timeoutMs: 30_000,
 	maxBlocks: 3,
 	trustReadOnlyHint: false,
+	userMessages: { first: 2, last: 10, chars: 2_000 },
 };
+
+/** Below this, a clipped message would be mostly its marker. */
+const MIN_MESSAGE_CHARS = 200;
+
+function invalidLimits(value: unknown): string | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return "userMessages must be an object";
+	const limits = value as Record<string, unknown>;
+	const minimum = { first: 0, last: 1, chars: MIN_MESSAGE_CHARS };
+	for (const [key, least] of Object.entries(minimum)) {
+		const number = limits[key];
+		if (key in limits && !(Number.isInteger(number) && (number as number) >= least)) {
+			return `userMessages.${key} must be a whole number of at least ${least}`;
+		}
+	}
+	return undefined;
+}
 
 export function configDir(env: NodeJS.ProcessEnv, home: string): string {
 	return join(env.XDG_CONFIG_HOME || join(home, ".config"), "pi-censor");
@@ -39,6 +67,10 @@ function invalid(value: Record<string, unknown>): string | undefined {
 	}
 	if ("trustReadOnlyHint" in value && typeof value.trustReadOnlyHint !== "boolean") {
 		return "trustReadOnlyHint must be true or false";
+	}
+	if ("userMessages" in value) {
+		const problem = invalidLimits(value.userMessages);
+		if (problem) return problem;
 	}
 	for (const key of ["timeoutMs", "maxBlocks"] as const) {
 		const number = value[key];
@@ -64,7 +96,9 @@ export function loadConfig(file: string): LoadedConfig {
 		}
 		const problem = invalid(value as Record<string, unknown>);
 		if (problem) return { config: DEFAULTS, error: `${file}: ${problem}` };
-		return { config: { ...DEFAULTS, ...value } };
+		const config = value as Partial<Config>;
+		// A partial userMessages block keeps the defaults for the numbers it leaves out.
+		return { config: { ...DEFAULTS, ...config, userMessages: { ...DEFAULTS.userMessages, ...config.userMessages } } };
 	} catch (error) {
 		return { config: DEFAULTS, error: `cannot parse ${file}: ${String(error)}` };
 	}

@@ -45,6 +45,7 @@ export default function (pi: ExtensionAPI) {
 	const censor = new Censor({
 		protection,
 		maxBlocks: config.maxBlocks,
+		userMessages: config.userMessages,
 		log,
 	});
 

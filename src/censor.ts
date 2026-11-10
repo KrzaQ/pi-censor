@@ -2,14 +2,13 @@
 
 import { isPlainCommand } from "./bash.ts";
 import type { ClassifierRequest, Verdict } from "./classifier.ts";
+import type { UserMessageLimits } from "./config.ts";
 import type { Log, LogEntry } from "./log.ts";
+import { UserMessages } from "./messages.ts";
 import { sessionRoots } from "./paths.ts";
 import type { Answer } from "./question.ts";
 import { fixedRule, type Protection } from "./rules.ts";
 
-/** How many of the user's latest messages the classifier sees, and how much of each. */
-const USER_MESSAGES = 12;
-const USER_MESSAGE_CHARS = 2_000;
 
 /** How many calls pi-censor remembers, to name the parent of a nested call. */
 const REMEMBERED_CALLS = 256;
@@ -47,6 +46,7 @@ export interface AskRequest {
 export interface Deps {
 	protection: Protection;
 	maxBlocks: number;
+	userMessages: UserMessageLimits;
 	log: Log;
 }
 
@@ -57,14 +57,16 @@ const ALLOW: Decision = { block: false };
 type Outcome = Pick<LogEntry, "stage" | "verdict" | "reason" | "classifierMs">;
 
 export class Censor {
-	private readonly userMessages: string[] = [];
+	private readonly userMessages: UserMessages;
 	private readonly sessionAllowed = new Set<string>();
 	private readonly toolOfCall = new Map<string, string>();
 	private blocksInARow = 0;
 	/** Tool calls can run in parallel. The user gets one question at a time. */
 	private questions: Promise<unknown> = Promise.resolve();
 
-	constructor(private readonly deps: Deps) {}
+	constructor(private readonly deps: Deps) {
+		this.userMessages = new UserMessages(deps.userMessages);
+	}
 
 	/**
 	 * Record a message. Only what the user typed counts: a tool call cannot forge
@@ -72,8 +74,7 @@ export class Censor {
 	 */
 	onInput(text: string, source: string): void {
 		if (source !== "interactive") return;
-		this.userMessages.push(text.slice(0, USER_MESSAGE_CHARS));
-		if (this.userMessages.length > USER_MESSAGES) this.userMessages.shift();
+		this.userMessages.add(text);
 	}
 
 	async decide(call: Call, context: CallContext): Promise<Decision> {
@@ -125,7 +126,7 @@ export class Censor {
 	private request(call: Call, context: CallContext, roots: readonly string[]): ClassifierRequest {
 		const command = call.input.command;
 		return {
-			userMessages: [...this.userMessages],
+			userMessages: this.userMessages.view(),
 			tool: call.tool,
 			input: call.input,
 			parentTool: this.parentTool(call),

@@ -39,7 +39,7 @@ function registry(reply: Reply) {
 }
 
 const text = (content: string) => () => ({ stopReason: "stop", content: [{ type: "text", text: content }] });
-const request = { userMessages: ["hi"], tool: "bash", input: { command: "ls" }, plain: true, cwd: "/p", roots: ["/p"] };
+const request = { userMessages: { first: ["hi"], leftOut: 0, last: [] }, tool: "bash", input: { command: "ls" }, plain: true, cwd: "/p", roots: ["/p"] };
 
 describe("classify", () => {
 	test("reads a verdict", async () => {
@@ -56,7 +56,7 @@ describe("classify", () => {
 		expect(context.messages).toHaveLength(1);
 		expect(Object.keys(context)).toEqual(["systemPrompt", "messages"]);
 		expect(JSON.parse(context.messages[0]?.content[0]?.text ?? "{}")).toMatchObject({
-			user_messages: ["hi"],
+			user_messages: { first: ["hi"], left_out: 0, last: [] },
 			action: { tool: "bash", input: { command: "ls" } },
 			plain: true,
 		});
@@ -198,6 +198,11 @@ describe("config", () => {
 		expect(loadConfig(file).config).toMatchObject({ model: "cloud/luna", maxBlocks: 5 });
 	});
 
+	test("a partial userMessages block keeps the other defaults", () => {
+		writeFileSync(file, '{"userMessages":{"last":4}}');
+		expect(loadConfig(file).config.userMessages).toEqual({ first: 2, last: 4, chars: 2000 });
+	});
+
 	test("a bad file is an error, not a silent default", () => {
 		for (const text of [
 			"not json",
@@ -207,6 +212,11 @@ describe("config", () => {
 			'{"timeoutMs":"x"}',
 			'{"maxBlocks":-1}',
 			'{"trustReadOnlyHint":"yes"}',
+			'{"userMessages":3}',
+			'{"userMessages":{"first":-1}}',
+			'{"userMessages":{"last":0}}',
+			'{"userMessages":{"chars":50}}',
+			'{"userMessages":{"chars":2.5}}',
 		]) {
 			writeFileSync(file, text);
 			expect(loadConfig(file).error).toBeString();
