@@ -195,6 +195,33 @@ describe("settings.json", () => {
 	});
 });
 
+describe("the read-only hint", () => {
+	const trusted = { ...scope, readOnly: true };
+
+	test("a trusted hint allows a tool without a classifier call", () => {
+		expect(rule("mcp__docs__search", { query: "x" }, trusted)).toEqual({ kind: "allow", by: "hint" });
+	});
+
+	test("without trust the tool goes to the classifier", () => {
+		expect(rule("mcp__docs__search", { query: "x" })).toEqual(CLASSIFY);
+	});
+
+	test("the hard rules still win", () => {
+		expect(rule("mcp__fs__read", { path: "~/.ssh/id_ed25519" }, trusted)).toEqual(asks);
+		expect(rule("mcp__fs__read", { path: "~/.pi/agent/trust.json" }, trusted)).toEqual(asks);
+		expect(rule("mcp__fs__read", { file_path: "CLAUDE.md" }, trusted)).toEqual(asks);
+	});
+
+	test("a shell never counts as read-only", () => {
+		expect(rule("bash", { command: "ls" }, trusted)).toEqual(CLASSIFY);
+		expect(rule("powershell", { command: "ls" }, trusted)).toEqual(CLASSIFY);
+	});
+
+	test("the built-in read tools keep their own rules", () => {
+		expect(rule("read", { path: "/etc/hostname" }, trusted)).toEqual(CLASSIFY);
+	});
+});
+
 describe("shell tools", () => {
 	test("never fast allow, and powershell counts", () => {
 		expect(rule("bash", { command: "ls" })).toEqual(CLASSIFY);

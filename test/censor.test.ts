@@ -58,6 +58,15 @@ describe("order of decisions", () => {
 		expect(logged[0]).toMatchObject({ stage: "fast", allowed: true });
 	});
 
+	test("a trusted read-only hint makes no model call", async () => {
+		const { censor, requests, asked, logged, context } = setup();
+		const call = { id: "c1", tool: "mcp__docs__search", input: { query: "x" } };
+		expect(await censor.decide(call, { ...context, readOnly: true })).toEqual({ block: false });
+		expect(requests).toHaveLength(0);
+		expect(asked).toHaveLength(0);
+		expect(logged[0]).toMatchObject({ stage: "hint", allowed: true });
+	});
+
 	test("the classifier allows", async () => {
 		const { censor, asked, logged, context } = setup([verdict("allow")]);
 		expect(await censor.decide(bash("ls"), context)).toEqual({ block: false });

@@ -11,7 +11,7 @@ export interface LogEntry {
 	parent?: string;
 	tool: string;
 	input: unknown;
-	/** The step that decided: `session`, `fast`, `hard`, `classifier`, `blocks` or `failure`. */
+	/** The step that decided: `session`, `fast`, `hint`, `hard`, `classifier`, `blocks` or `failure`. */
 	stage: string;
 	verdict?: string;
 	reason?: string;

@@ -9,11 +9,14 @@ export interface Config {
 	timeoutMs: number;
 	/** How many classifier blocks in a row run before the next one asks the user. */
 	maxBlocks: number;
+	/** A tool that declares itself read-only runs without a classifier call. */
+	trustReadOnlyHint: boolean;
 }
 
 export const DEFAULTS: Config = {
 	timeoutMs: 30_000,
 	maxBlocks: 3,
+	trustReadOnlyHint: false,
 };
 
 export function configDir(env: NodeJS.ProcessEnv, home: string): string {
@@ -33,6 +36,9 @@ export interface LoadedConfig {
 function invalid(value: Record<string, unknown>): string | undefined {
 	if ("model" in value && !(typeof value.model === "string" && value.model.includes("/"))) {
 		return "model must be provider/id";
+	}
+	if ("trustReadOnlyHint" in value && typeof value.trustReadOnlyHint !== "boolean") {
+		return "trustReadOnlyHint must be true or false";
 	}
 	for (const key of ["timeoutMs", "maxBlocks"] as const) {
 		const number = value[key];

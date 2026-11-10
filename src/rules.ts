@@ -6,7 +6,8 @@ import { basename, join } from "node:path";
 import { bashHardRule } from "./bash.ts";
 import { followLinks, isInRoots, isInside, resolveLikePi } from "./paths.ts";
 
-export type Rule = { kind: "allow" } | { kind: "ask"; reason: string } | { kind: "classify" };
+/** `by: "hint"` marks an allow that rests on the tool's own claim to be read-only. */
+export type Rule = { kind: "allow"; by?: "hint" } | { kind: "ask"; reason: string } | { kind: "classify" };
 
 const CLASSIFY: Rule = { kind: "classify" };
 
@@ -27,6 +28,8 @@ export interface Scope {
 	roots: readonly string[];
 	/** The tool with this name is pi's own, not an extension's. */
 	builtin: boolean;
+	/** The tool declares itself read-only, and the config trusts that. */
+	readOnly?: boolean;
 }
 
 const READ_ONLY = new Set(["read", "grep", "find", "ls"]);
@@ -180,5 +183,7 @@ export function fixedRule(tool: string, input: Record<string, unknown>, scope: S
 		const rule = writeRule(tool, raw, input, scope, protection);
 		if (rule.kind !== "classify") return rule;
 	}
-	return CLASSIFY;
+	// The hard rules above still apply. The tool's server makes this claim
+	// about itself, so it counts only when the user turned it on.
+	return scope.readOnly ? { kind: "allow", by: "hint" } : CLASSIFY;
 }

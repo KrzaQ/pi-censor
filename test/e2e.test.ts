@@ -301,6 +301,48 @@ describe("pi in RPC mode", () => {
 		expect(requests[0]?.title).toContain("does not know");
 	}, 30_000);
 
+	test("a tool's read-only hint counts only when the config trusts it", async () => {
+		const probe = join(root, "probe.ts");
+		writeFileSync(
+			probe,
+			`export default function (pi) {
+				for (const [name, annotations] of [
+					["probe_read", { readOnlyHint: true }],
+					["probe_both", { readOnlyHint: true, destructiveHint: true }],
+				]) {
+					pi.registerTool({
+						name,
+						label: name,
+						description: "A test tool.",
+						parameters: { type: "object", properties: {} },
+						annotations,
+						execute: async () => ({ content: [{ type: "text", text: name + " ran" }], details: undefined }),
+					});
+				}
+			}`,
+		);
+		const file = join(root, "config/pi-censor/config.json");
+		verdictOf = () => ({ verdict: "block", reason: "classifier saw it" });
+		const script: Step[] = [
+			{ tool: "probe_read", args: {} },
+			{ tool: "probe_both", args: {} },
+		];
+
+		const off = await rpcSession(script, deny, ["-e", probe]);
+		expect(off.finished.map((f) => f.text)).toEqual([
+			expect.stringContaining("classifier saw it"),
+			expect.stringContaining("classifier saw it"),
+		]);
+
+		writeFileSync(file, JSON.stringify({ trustReadOnlyHint: true }));
+		const before = classifierBodies.length;
+		const on = await rpcSession(script, deny, ["-e", probe]);
+		rmSync(file);
+		expect(on.finished.map((f) => f.text)).toEqual(["probe_read ran", expect.stringContaining("classifier saw it")]);
+		expect(classifierBodies.length).toBe(before + 1);
+		expect(JSON.parse(classifierBodies.at(-1) ?? "{}").action.tool).toBe("probe_both");
+	}, 30_000);
+
 	test("every decision is in a log that only the user can read", () => {
 		expect(statSync(logFile).mode & 0o777).toBe(0o600);
 		const entries = readFileSync(logFile, "utf8").trim().split("\n").map((line) => JSON.parse(line));

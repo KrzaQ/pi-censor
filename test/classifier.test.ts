@@ -190,6 +190,7 @@ describe("config", () => {
 	test("a missing file gives the defaults", () => {
 		expect(loadConfig(file)).toEqual({ config: DEFAULTS });
 		expect(DEFAULTS.model).toBeUndefined();
+		expect(DEFAULTS.trustReadOnlyHint).toBe(false);
 	});
 
 	test("a file overrides the defaults", () => {
@@ -198,7 +199,15 @@ describe("config", () => {
 	});
 
 	test("a bad file is an error, not a silent default", () => {
-		for (const text of ["not json", "[]", '{"model":3}', '{"model":"no-slash"}', '{"timeoutMs":"x"}', '{"maxBlocks":-1}']) {
+		for (const text of [
+			"not json",
+			"[]",
+			'{"model":3}',
+			'{"model":"no-slash"}',
+			'{"timeoutMs":"x"}',
+			'{"maxBlocks":-1}',
+			'{"trustReadOnlyHint":"yes"}',
+		]) {
 			writeFileSync(file, text);
 			expect(loadConfig(file).error).toBeString();
 		}

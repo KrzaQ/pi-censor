@@ -28,6 +28,8 @@ export interface CallContext {
 	/** The tool with this name is pi's own, not an extension's. */
 	builtin: boolean;
 	hints?: unknown;
+	/** The tool declares itself read-only, and the config trusts that. */
+	readOnly?: boolean;
 	signal?: AbortSignal;
 	/** Ask the classifier. It uses the session's model at the time of this call. */
 	classify: (request: ClassifierRequest, signal?: AbortSignal) => Promise<Verdict>;
@@ -81,10 +83,10 @@ export class Censor {
 			return ALLOW;
 		}
 		const roots = sessionRoots(context.cwd, this.deps.protection.home);
-		const scope = { cwd: context.cwd, roots, builtin: context.builtin };
+		const scope = { cwd: context.cwd, roots, builtin: context.builtin, readOnly: context.readOnly };
 		const rule = fixedRule(call.tool, call.input, scope, this.deps.protection);
 		if (rule.kind === "allow") {
-			this.log(call, context, { stage: "fast" }, true);
+			this.log(call, context, { stage: rule.by ?? "fast" }, true);
 			return ALLOW;
 		}
 		if (rule.kind === "ask") return this.toUser(call, context, { stage: "hard", reason: rule.reason });

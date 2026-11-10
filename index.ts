@@ -74,6 +74,11 @@ export default function (pi: ExtensionAPI) {
 				session: ctx.sessionManager.getSessionId(),
 				builtin: tool?.sourceInfo.source === "builtin",
 				hints: tool?.annotations,
+				// A tool that claims both read-only and destructive gets no trust.
+				readOnly:
+					config.trustReadOnlyHint &&
+					tool?.annotations?.readOnlyHint === true &&
+					tool.annotations.destructiveHint !== true,
 				signal: ctx.signal,
 				classify: (request, signal) => {
 					if (configError) throw new Error(configError);
